@@ -1,16 +1,47 @@
 const express = require("express");
-const { use } = require("passport");
+const passport = require("passport");
+const LocalStrategy = require("passport-local").Strategy;
+const JwtStrategy = require("passport-jwt").Strategy;
+const ExtractJwt = require("passport-jwt").ExtractJwt;
+const jwt = require("jsonwebtoken");
+
 const app = express();
 const port = process.env.PORT || 3000;
-const SECRET_JWT_KEY = 'tisosalmeniaebali228';
-const jwt = require("jsonwebtoken");
-app.use(express.json()); // for parsing application/json
-// ------ WRITE YOUR SOLUTION HERE BELOW ------//
+const SECRET_JWT_KEY = "tisosalmeniaebali228";
 
-// Your solution should be written here
+app.use(express.json());
+app.use(passport.initialize());
 
 let users = [];
 const highScores = {};
+
+
+passport.use(
+  new LocalStrategy({ usernameField: "userHandle", passwordField: "password" }, (userHandle, password, done) => {
+    const user = users.find((u) => u.userHandle === userHandle && u.password === password);
+    if (!user) {
+      return done(null, false);
+    }
+    return done(null, user);
+  })
+);
+
+
+passport.use(
+  new JwtStrategy(
+    {
+      jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
+      secretOrKey: SECRET_JWT_KEY,
+    },
+    (jwtPayload, done) => {
+      const user = users.find((u) => u.userHandle === jwtPayload.userHandle);
+      if (!user) {
+        return done(null, false);
+      }
+      return done(null, user);
+    }
+  )
+);
 
 const validatePassword = (req, res, next) => {
   console.log("Request Body:", req.body);
@@ -26,20 +57,18 @@ const validatePassword = (req, res, next) => {
 
   req.user = {
     userHandle: req.body.userHandle,
-    password: req.body.password
+    password: req.body.password,
   };
 
   next();
 };
-
 
 app.post("/signup", validatePassword, (req, res) => {
   users.push(req.user);
   res.status(201).send("User registered successfully");
 });
 
-
-app.post("/login", (req, res) => {
+app.post("/login", (req, res, next) => {
   if (
     !req.body || 
     typeof req.body.userHandle !== "string" || 
@@ -52,67 +81,41 @@ app.post("/login", (req, res) => {
     return;
   }
 
-  
-  const user = users.find(
-    (u) => u.userHandle === req.body.userHandle && u.password === req.body.password
-  );
+  passport.authenticate("local", { session: false }, (err, user) => {
+    if (err || !user) {
+      res.status(401).send("Unauthorized, incorrect username or password");
+      return;
+    }
 
-
-  if (!user) {
-    res.status(401).send("Unauthorized, incorrect username or password");
-    return;
-  }
-
-  
-  const token = jwt.sign(
-    { userHandle: user.userHandle }, 
-    SECRET_JWT_KEY, 
-    { expiresIn: "1h" } 
-  );
-  console.log("Generated token:", token);
-   res.status(200).json({ jsonWebToken: token });
+    const token = jwt.sign({ userHandle: user.userHandle }, SECRET_JWT_KEY, { expiresIn: "1h" });
+    console.log("Generated token:", token);
+    res.status(200).json({ jsonWebToken: token });
+  })(req, res, next);
 });
 
 
-app.post("/high-scores", (req, res) => {
-  
-  const authHeader = req.headers.authorization;
-  if (!authHeader || !authHeader.startsWith("Bearer ")) {
-    console.log("Does not start with Bearer")
-    res.status(401).send("Unauthorized, JWT token is missing or invalid");
-    return;
-  }
-
-  const token = authHeader.split(" ")[1]; 
-  console.log(token)
-  let decoded;
-  try {
-    decoded = jwt.verify(token, SECRET_JWT_KEY);
-    console.log("Headers:", req.headers.authorization); 
-console.log("Decoded token:", decoded);
-  } catch (error) {
-    res.status(401).send("Unauthorized, invalid JWT token");
-    return;
-  }
-
+app.post("/high-scores", passport.authenticate("jwt", { session: false }), (req, res) => {
+  console.log("Headers:", req.headers.authorization);
+  console.log("Decoded token:", req.user);
 
   const { level, userHandle, score, timestamp } = req.body;
+
   if (
     typeof level !== "string" ||
     typeof userHandle !== "string" ||
     typeof score !== "number" ||
     typeof timestamp !== "string" ||
-    new Date(timestamp).toString() === "Invalid Date" 
+    new Date(timestamp).toString() === "Invalid Date"
   ) {
     res.status(400).send("Invalid request body");
     return;
   }
 
-  
-  if (decoded.userHandle !== userHandle) {
+  if (req.user.userHandle !== userHandle) {
     res.status(401).send("Unauthorized, userHandle does not match JWT token");
     return;
   }
+
   if (!highScores[level]) {
     highScores[level] = [];
   }
@@ -152,11 +155,6 @@ app.get("/high-scores", (req, res) => {
 
   res.status(200).json(paginatedScores);
 });
-
-
-
-//------ WRITE YOUR SOLUTION ABOVE THIS LINE ------//
-
 let serverInstance = null;
 module.exports = {
   start: function () {
